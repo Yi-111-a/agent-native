@@ -19,6 +19,9 @@ const messages = {
     slidePosition: "Slide {{current}} of {{total}}",
   },
   creativeContext: creativeContextMessagesByLocale["en-US"],
+  common: {
+    loading: "Loading...",
+  },
   root: {
     commandPresentations: "Presentations",
     searchDecks: "Search decks",
@@ -44,14 +47,10 @@ const messages = {
   settings: {
     agentObservability: "Agent Observability",
     title: "Settings",
-    description: "Language and workspace preferences for this app.",
     labs: "Labs",
     labsIntro: "Preview experimental features before they ship.",
     labLayoutOverflowWarningDescription:
       "Show the layout overflow warning in the editor.",
-    emailNotifications: "Email notifications",
-    emailNotificationsDescription:
-      "Get an email when someone comments on or replies in your deck.",
     saveFailed: "Failed to save",
     notificationsEmail: "Email",
     commentsAndReplies: "Comments and replies",
@@ -60,10 +59,6 @@ const messages = {
     retry: "Retry",
     mcpAbout:
       "Connect Slides to Claude, ChatGPT, Cursor, or any AI app that supports MCP. That app can then work in Slides for you: create decks, add slides, and export to PowerPoint. It sees only what you can see.",
-    languageTitle: "Language",
-    languageDescription:
-      "Choose the interface language. This preference is saved for your account.",
-    languageLabel: "Interface language",
     workspaceTitle: "Workspace",
     workspaceDescription:
       "Manage team members, organization access, and shared workspace preferences.",
@@ -651,6 +646,21 @@ const messages = {
     enterFullscreen: "Enter fullscreen",
     clickToEnterFullscreen: "Click to enter fullscreen",
   },
+  deckAccessPage: {
+    errorCode: "Error 403",
+    noAccessTitle: "You don't have access",
+    noAccessDescription:
+      "Ask the deck owner for access, or switch to the right account.",
+    noteLabel: "Add a note for the owner (optional)",
+    notePlaceholder: "I'm reviewing this deck",
+    requesting: "Requesting",
+    requestFailed: "Your request wasn't sent. Please try again.",
+    requestSentDescription:
+      "We’ll email you as soon as the owner approves your request.",
+    goHome: "Go home",
+    signedInAs: "Signed in as",
+    switchAccount: "Switch account",
+  },
   deckEditor: {
     lookingForDeck: "Looking for this deck",
     joinTeamToOpen: "Join your team to open this deck",
@@ -696,6 +706,9 @@ const messages = {
     accessApprovalTitle: "Access granted",
     accessApprovalAlreadyTitle: "Access already granted",
     accessApprovalMessage: "{{email}} can now open this deck.",
+    accessApprovalRequesterEmailed: "We emailed them to let them know.",
+    accessApprovalRequesterEmailFailed:
+      "We couldn't email {{email}}. Let them know they can open the deck now.",
     accessApprovalAlreadyMessage: "{{email}} already has access to this deck.",
     accessApprovalErrorTitle: "Couldn't grant access",
     accessApprovalInvalid: "This access request is invalid or expired.",
@@ -832,6 +845,8 @@ const messages = {
       networkFailed:
         "The import request timed out or lost its network connection. Check your connection and retry.",
       notStarted: "Complete any required sign-in, then retry the import.",
+      unsupportedFileType:
+        "This file type isn't supported. Choose a supported file.",
       uploadLimitExceeded:
         "The upload exceeds a supported limit. Reduce the file size or choose fewer files, then retry.",
     },
@@ -872,6 +887,8 @@ const messages = {
       notReady:
         "Context is still loading or unavailable. Retry or remove it before sending.",
       emptySource: "This source returned no usable context.",
+      websiteReadFailed:
+        "This website couldn't be read automatically. Copy and paste the relevant text instead.",
       figmaReadFailed:
         "Design couldn't read this Figma reference. Check the saved Figma access token in Design and make sure its account can open the file, then try again.",
       tooMany: "Choose up to 20 references.",
@@ -1028,6 +1045,11 @@ const messages = {
     createFirstDeck: "Create your first deck",
     emptyDescription:
       "Build beautiful presentations with AI-powered generation.",
+  },
+  agentChat: {
+    setup: {
+      providerStatusUnavailable: "Couldn't check AI connection.",
+    },
   },
 };
 
