@@ -225,6 +225,7 @@ type AgentKitInternalSendOptions = AssistantChatSendOptions & {
   deferredAgentId?: string | null;
   deferredContextScope?: AgentKitAssistantChatProps["contextScope"] | null;
   deferredSubmissionId?: string;
+  recheckQueuedIntent?: boolean;
 };
 
 interface PendingProviderSubmission {
@@ -1136,7 +1137,7 @@ const AgentKitAssistantChatBody = forwardRef<
     useState<string | null>(null);
   const pendingProviderRetryTimerRef = useRef<number | undefined>(undefined);
   const pendingProviderSubmissionsRef = useRef<PendingProviderSubmission[]>([]);
-  const drainingProviderSubmissionsRef = useRef(false);
+  const drainingProviderSubmissionsRef = useRef(new Set<string>());
   const [
     deferredProviderSubmissionFailureId,
     setDeferredProviderSubmissionFailureId,
@@ -1945,7 +1946,10 @@ const AgentKitAssistantChatBody = forwardRef<
       };
       localSubmissionRef.current = true;
       try {
-        if (composerOptions.intent === "queued") {
+        if (
+          composerOptions.intent === "queued" &&
+          (!options.recheckQueuedIntent || isThreadRunning())
+        ) {
           await control.queueMessage({
             text: message,
             attachments: fileParts,
@@ -1979,7 +1983,11 @@ const AgentKitAssistantChatBody = forwardRef<
         ) {
           requestPendingSelectionClear();
         }
-        const usedKeys = new Set(contextItems.map((item) => item.key));
+        const usedKeys = new Set(
+          (composerOptions.contextItems ?? contextItems).map(
+            (item) => item.key,
+          ),
+        );
         publishAgentChatContextItems(
           getAgentChatContextState().items.filter(
             (item) => !usedKeys.has(item.key),
@@ -2004,6 +2012,7 @@ const AgentKitAssistantChatBody = forwardRef<
       props.selectedModel,
       fileStorageConfigured,
       t,
+      isThreadRunning,
       requestPendingSelectionClear,
     ],
   );
@@ -2020,6 +2029,8 @@ const AgentKitAssistantChatBody = forwardRef<
       if (!release) {
         if (
           !setupMissing &&
+          !props.composerDisabled &&
+          !props.composerSubmissionDisabled &&
           (isRestoring ||
             (providerChecksEnabled &&
               (readiness.state === "unknown" ||
@@ -2145,6 +2156,8 @@ const AgentKitAssistantChatBody = forwardRef<
       dispatch,
       fileStorageConfigured,
       props.contextScope,
+      props.composerDisabled,
+      props.composerSubmissionDisabled,
       props.execMode,
       props.selectedAgent,
       props.selectedEffort,
@@ -2159,6 +2172,8 @@ const AgentKitAssistantChatBody = forwardRef<
       threadId,
     ],
   );
+  const submitRef = useRef(submit);
+  submitRef.current = submit;
 
   const submitPrepared = useCallback(
     async (
@@ -2177,11 +2192,12 @@ const AgentKitAssistantChatBody = forwardRef<
         ) {
           try {
             const preparedOptions = prepare ? await prepare() : composerOptions;
-            const result = await submit(
+            const result = await submitRef.current(
               text,
               files,
               references,
               preparedOptions,
+              { recheckQueuedIntent: true },
             );
             if (result.status === "rejected") {
               throw new Error(t("agentChat.recovery.deferredSubmissionFailed"));
@@ -2197,7 +2213,9 @@ const AgentKitAssistantChatBody = forwardRef<
       }
       try {
         const preparedOptions = prepare ? await prepare() : composerOptions;
-        await dispatch(text, files, references, preparedOptions);
+        await dispatch(text, files, references, preparedOptions, {
+          recheckQueuedIntent: true,
+        });
       } catch (error) {
         dispatchSetupRequiredEvent(error, props.tabId, threadId);
         throw error;
@@ -2212,7 +2230,6 @@ const AgentKitAssistantChatBody = forwardRef<
       props.composerSubmissionDisabled,
       props.tabId,
       providerSubmissionPending,
-      submit,
       t,
       threadId,
     ],
@@ -2224,7 +2241,7 @@ const AgentKitAssistantChatBody = forwardRef<
       isRestoring ||
       setupMissing ||
       deferredSubmissionsLoadedThread !== threadId ||
-      drainingProviderSubmissionsRef.current
+      drainingProviderSubmissionsRef.current.has(threadId)
     ) {
       return;
     }
@@ -2238,7 +2255,7 @@ const AgentKitAssistantChatBody = forwardRef<
     }
 
     let active = true;
-    drainingProviderSubmissionsRef.current = true;
+    drainingProviderSubmissionsRef.current.add(threadId);
     void (async () => {
       let release: (() => void) | null = null;
       let claimToken: string | undefined;
@@ -2431,7 +2448,7 @@ const AgentKitAssistantChatBody = forwardRef<
           window.clearInterval(claimRenewalTimer);
         }
         release?.();
-        drainingProviderSubmissionsRef.current = false;
+        drainingProviderSubmissionsRef.current.delete(threadId);
       }
     })();
     return () => {
@@ -2465,6 +2482,7 @@ const AgentKitAssistantChatBody = forwardRef<
         { intent: isThreadRunning() ? "queued" : "immediate" },
         {
           ...options,
+          recheckQueuedIntent: true,
           attachments: [
             ...(options?.attachments ?? []),
             ...(images ?? []).map((url) => ({
@@ -2501,6 +2519,7 @@ const AgentKitAssistantChatBody = forwardRef<
           hideUserMessage: true,
           recoveryAction,
           recoveryReferences: references,
+          recheckQueuedIntent: true,
           ...recoveryOptions,
           attachments: [
             ...(attachments ?? []),
@@ -3412,7 +3431,8 @@ function AgentKitComposerSurface({
         !submissionAllowed.current ||
         !mounted.current ||
         currentSubmissionScope.current !== submissionScope ||
-        currentProviderStatus.current !== submissionProviderStatus
+        (currentProviderStatus.current !== submissionProviderStatus &&
+          currentProviderStatus.current !== "configured")
       ) {
         throw new Error(t("agentChat.error.failed"));
       }

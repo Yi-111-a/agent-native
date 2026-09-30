@@ -2616,6 +2616,78 @@ describe("AgentKitClient", () => {
     });
   });
 
+  it("retries promotion when a terminal signal arrives during an in-flight promotion", async () => {
+    const runTerminals = new Map([
+      ["run-1", Promise.withResolvers<void>()],
+      ["run-2", Promise.withResolvers<void>()],
+    ]);
+    const firstPromotionStarted = Promise.withResolvers<void>();
+    const finishFirstPromotion = Promise.withResolvers<void>();
+    const queued: AgentQueuedMessage = {
+      id: "queued-retry",
+      threadId: "thread-1",
+      text: "Run after both responses",
+      createdAt: "2026-08-29T00:00:00.000Z",
+    };
+    let runCount = 0;
+    let promotionAttempts = 0;
+    const transport: AgentTransport = {
+      capabilities: { messageQueue: true },
+      async startRun() {
+        runCount += 1;
+        return { runId: `run-${runCount}` };
+      },
+      async queueMessage() {
+        return { message: queued };
+      },
+      async steerQueuedMessage() {
+        promotionAttempts += 1;
+        if (promotionAttempts === 1) {
+          firstPromotionStarted.resolve();
+          await finishFirstPromotion.promise;
+          throw new Error("The prior run still owns the thread.");
+        }
+        return { runId: "run-3" };
+      },
+      async *subscribeToRun({ runId }) {
+        yield { ...protocolEvent(1, { type: "run.started" }), runId };
+        const terminal = runTerminals.get(runId);
+        if (terminal) await terminal.promise;
+        yield { ...protocolEvent(2, { type: "run.completed" }), runId };
+      },
+      async cancelRun() {},
+    };
+    const client = new AgentKitClient({ transport });
+    const firstRun = await client.sendMessage({
+      threadId: "thread-1",
+      text: "Finish the first response",
+    });
+    await client.queueMessage({ threadId: "thread-1", text: queued.text });
+
+    runTerminals.get("run-1")!.resolve();
+    await firstRun.completed;
+    await firstPromotionStarted.promise;
+
+    const secondRun = await client.sendMessage({
+      threadId: "thread-1",
+      text: "Finish another response",
+    });
+    runTerminals.get("run-2")!.resolve();
+    await secondRun.completed;
+    finishFirstPromotion.resolve();
+
+    await vi.waitFor(() => expect(promotionAttempts).toBe(2));
+    await vi.waitFor(() =>
+      expect(client.getThread("thread-1").queuedMessages).toEqual([]),
+    );
+    await vi.waitFor(() =>
+      expect(client.getThread("thread-1").runs["run-3"]?.status).toBe(
+        "completed",
+      ),
+    );
+    await client.dispose();
+  });
+
   it("promotes a queued write that settles after the previous run completes", async () => {
     const runCompletion = Promise.withResolvers<void>();
     const queueWriteStarted = Promise.withResolvers<void>();

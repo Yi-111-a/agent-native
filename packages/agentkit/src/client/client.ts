@@ -548,6 +548,7 @@ export class AgentKitClient implements AgentKitController {
   >();
   private readonly queueMutationChains = new Map<ThreadId, Promise<void>>();
   private readonly queuePromotions = new Set<ThreadId>();
+  private readonly queuePromotionRequests = new Set<ThreadId>();
   private readonly requestAbortController = new AbortController();
   private capabilitiesLoad?: Promise<AgentCapabilities>;
   private shutdownPromise?: Promise<void>;
@@ -3055,7 +3056,10 @@ export class AgentKitClient implements AgentKitController {
 
   private scheduleQueuePromotion(threadId: ThreadId): void {
     const thread = this.getThread(threadId);
-    if (this.queuePromotions.has(threadId)) return;
+    if (this.queuePromotions.has(threadId)) {
+      this.queuePromotionRequests.add(threadId);
+      return;
+    }
     const queued = thread.queuedMessages[0];
     if (!queued) return;
     if (!this.transport.steerQueuedMessage) {
@@ -3071,7 +3075,12 @@ export class AgentKitClient implements AgentKitController {
       .catch(() => {
         // `steerQueuedMessage` already restores state and reports the failure.
       })
-      .finally(() => this.queuePromotions.delete(threadId));
+      .finally(() => {
+        this.queuePromotions.delete(threadId);
+        if (this.queuePromotionRequests.delete(threadId) && !this.disposed) {
+          this.scheduleQueuePromotion(threadId);
+        }
+      });
   }
 
   private assertActive(): void {

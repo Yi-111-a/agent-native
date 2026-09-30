@@ -687,7 +687,7 @@ function chooseMergedMessageEntry(existingEntry: any, incomingEntry: any): any {
   const incoming = getStoredMessage(incomingEntry);
   if (existing?.role === "user" && incoming?.role === "user") {
     const custom = existing.metadata?.custom;
-    if (custom?.submittedRunId) {
+    if (custom?.submittedRunId || custom?.agentNativeDeferredSubmissionId) {
       const message = {
         ...incoming,
         metadata: {
@@ -696,7 +696,17 @@ function chooseMergedMessageEntry(existingEntry: any, incomingEntry: any): any {
           custom: {
             ...custom,
             ...incoming.metadata?.custom,
-            submittedRunId: custom.submittedRunId,
+            ...(custom.submittedRunId
+              ? { submittedRunId: custom.submittedRunId }
+              : {}),
+            ...(custom.agentNativeDeferredSubmissionId
+              ? {
+                  agentNativeDeferredSubmissionId:
+                    incoming.metadata?.custom
+                      ?.agentNativeDeferredSubmissionId ??
+                    custom.agentNativeDeferredSubmissionId,
+                }
+              : {}),
             ...(custom.submittedTurnId
               ? { submittedTurnId: custom.submittedTurnId }
               : {}),

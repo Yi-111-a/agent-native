@@ -2026,29 +2026,55 @@ describe("createAgentNativeAgentKitTransport", () => {
     },
   );
 
-  it("keeps queued work durable while the runtime owns a continuation", async () => {
+  it("waits for the runtime continuation before promoting queued work", async () => {
     const queueWrites: unknown[] = [];
+    let activeRunChecks = 0;
+    let queuedMessages = [{ id: "queued-1", text: "Wait for approval" }];
     const fetcher = vi.fn(
       async (input: string | URL | Request, init?: RequestInit) => {
         const url = String(input);
         if (url.includes("/runs/active?threadId=thread-1")) {
+          activeRunChecks += 1;
+          if (activeRunChecks === 1) {
+            return json({
+              active: false,
+              status: "completed",
+              awaitingRedispatch: true,
+            });
+          }
           return json({
-            active: true,
-            status: "running",
-            awaitingRedispatch: true,
+            active: false,
+            status: "completed",
+            awaitingRedispatch: false,
           });
         }
         if (url.endsWith("/threads/thread-1") && !init?.method) {
           return json({
             id: "thread-1",
             threadData: JSON.stringify({
-              queuedMessages: [{ id: "queued-1", text: "Wait for approval" }],
+              queuedMessages,
             }),
           });
         }
         if (url.endsWith("/threads/thread-1/queued")) {
-          queueWrites.push(JSON.parse(String(init?.body)));
-          return json({ ok: true });
+          const mutation = JSON.parse(String(init?.body)).mutation;
+          queueWrites.push(mutation);
+          const index = queuedMessages.findIndex(
+            (message) => message.id === mutation.messageId,
+          );
+          const removedMessage = queuedMessages[index];
+          queuedMessages = queuedMessages.filter(
+            (message) => message.id !== mutation.messageId,
+          );
+          return json({ queuedMessages, removedMessage, index });
+        }
+        if (url.endsWith("/_agent-native/agent-chat")) {
+          return new Response('data: {"type":"done"}\n\n', {
+            headers: {
+              "content-type": "text/event-stream",
+              "x-run-id": "run-2",
+            },
+          });
         }
         return json({ error: "Not found" }, 404);
       },
@@ -2063,8 +2089,11 @@ describe("createAgentNativeAgentKitTransport", () => {
         threadId: "thread-1",
         messageId: "queued-1",
       }),
-    ).rejects.toThrow("runtime owns a continuation");
-    expect(queueWrites).toEqual([]);
+    ).resolves.toMatchObject({ runId: "run-2" });
+    expect(activeRunChecks).toBe(3);
+    expect(queueWrites).toEqual([{ type: "claim", messageId: "queued-1" }]);
+    expect(queuedMessages).toEqual([]);
+    await transport.dispose();
   });
 
   it("distinguishes a missing thread from an empty durable queue", async () => {

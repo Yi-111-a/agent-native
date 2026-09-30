@@ -1801,6 +1801,46 @@ describe("mergeThreadDataForClientSave", () => {
     expect(merged.messages[0].message.id).toBe("client-runtime-id");
   });
 
+  it("preserves a deferred submission marker when a stale client copy is saved", () => {
+    const existing = {
+      messages: [
+        {
+          message: {
+            id: "server-user-1",
+            role: "user",
+            content: [{ type: "text", text: "make me a deck" }],
+            metadata: {
+              custom: { agentNativeDeferredSubmissionId: "deferred-1" },
+            },
+          },
+          parentId: null,
+        },
+      ],
+    };
+    const incoming = {
+      messages: [
+        {
+          message: {
+            id: "client-user-1",
+            role: "user",
+            content: [{ type: "text", text: "make me a deck" }],
+            metadata: { custom: {} },
+          },
+          parentId: null,
+        },
+      ],
+    };
+
+    const merged = mergeThreadDataForClientSave(existing, incoming);
+
+    expect(merged.messages).toHaveLength(1);
+    expect(merged.messages[0].message.id).toBe("client-user-1");
+    expect(
+      merged.messages[0].message.metadata.custom
+        .agentNativeDeferredSubmissionId,
+    ).toBe("deferred-1");
+  });
+
   it("keeps a terminal server message over a stale same-run partial", () => {
     const existing = {
       messages: [

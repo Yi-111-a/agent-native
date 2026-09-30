@@ -1530,9 +1530,46 @@ describe("AgentKitAssistantChat host behavior", () => {
     expect(chatMocks.composerProps.disabled).toBe(false);
     expect(chatMocks.composerProps.submissionDisabled).toBe(false);
     expect(chatMocks.composerProps.requireAgentEngine).toBe(false);
+    expect(container.textContent).not.toMatch(/checking AI connection/i);
+    expect(container.querySelector('[role="status"]')).toBeNull();
     await expect(chatMocks.composerProps.onBeforeSubmit()).resolves.toBe(true);
     expect(chatMocks.control.sendMessage).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["composerDisabled", { composerDisabled: true }],
+    ["composerSubmissionDisabled", { composerSubmissionDisabled: true }],
+  ] as const)(
+    "does not defer a programmatic send while %s is set",
+    async (_, gate) => {
+      chatMocks.readiness = {
+        canChat: false,
+        missing: false,
+        state: "unknown",
+      };
+      const ref = createRef<AssistantChatHandle>();
+      await mount(
+        baseProps({ providerStatusChecksEnabled: true, ...gate }),
+        ref,
+      );
+
+      let result!: AssistantChatSubmitResult;
+      await act(async () => {
+        result = await ref.current!.sendMessage("Keep this send blocked");
+      });
+
+      expect(result).toEqual({
+        status: "rejected",
+        reason: "submission-unavailable",
+      });
+      expect(chatMocks.control.sendMessage).not.toHaveBeenCalled();
+      expect(
+        [...chatMocks.appState.keys()].some((key) =>
+          key.startsWith("agentkit-deferred-provider-submissions:"),
+        ),
+      ).toBe(false);
+    },
+  );
 
   it("queues composer sends until provider readiness resolves", async () => {
     chatMocks.readiness = {
@@ -1583,6 +1620,168 @@ describe("AgentKitAssistantChat host behavior", () => {
       "Send after provider discovery",
     );
     expect(chatMocks.appState.has(stateKey!)).toBe(false);
+  });
+
+  it("sends a deferred queued prompt directly if its run finishes before provider readiness", async () => {
+    chatMocks.readiness = {
+      canChat: false,
+      missing: false,
+      state: "unknown",
+    };
+    chatMocks.thread.activeRunIds = ["run-1"];
+    chatMocks.thread.runs = {
+      "run-1": { id: "run-1", status: "running", lastSequence: 1 },
+    };
+    const props = baseProps({ providerStatusChecksEnabled: true });
+    await mount(props);
+    await flush();
+
+    await act(async () => {
+      await expect(chatMocks.composerProps.onBeforeSubmit()).resolves.toBe(
+        true,
+      );
+      await chatMocks.composerProps.onSubmit(
+        "Send after the active run finishes",
+        [],
+        [],
+        { intent: "queued" },
+      );
+    });
+    expect(chatMocks.control.sendMessage).not.toHaveBeenCalled();
+    expect(chatMocks.control.queueMessage).not.toHaveBeenCalled();
+    expect(
+      [...chatMocks.appState.values()].some((value: any) =>
+        value?.submissions?.some(
+          (submission: any) =>
+            submission.text === "Send after the active run finishes",
+        ),
+      ),
+    ).toBe(true);
+
+    chatMocks.thread.activeRunIds = [];
+    chatMocks.thread.runs["run-1"].status = "completed";
+    chatMocks.readiness = {
+      canChat: true,
+      missing: false,
+      state: "configured",
+    };
+    await act(async () => root.render(<AgentKitAssistantChat {...props} />));
+    await flush();
+
+    expect(chatMocks.control.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Send after the active run finishes",
+      }),
+    );
+    expect(chatMocks.control.queueMessage).not.toHaveBeenCalled();
+  });
+
+  it("keeps context added during provider discovery after the deferred send", async () => {
+    chatMocks.readiness = {
+      canChat: false,
+      missing: false,
+      state: "unknown",
+    };
+    const ref = createRef<AssistantChatHandle>();
+    const props = baseProps({ providerStatusChecksEnabled: true });
+    await mount(props, ref);
+    const submitted = {
+      key: "submitted-context",
+      title: "Submitted",
+      context: "Used by this prompt",
+    };
+    await act(async () =>
+      ref.current!.setComposerContextItem(submitted, { focus: false }),
+    );
+
+    await act(async () => {
+      await chatMocks.composerProps.onSubmit(
+        "Send after provider discovery",
+        [],
+        [],
+        {
+          intent: "immediate",
+          contextItems: chatMocks.composerProps.contextItems,
+        },
+      );
+    });
+    const later = {
+      key: "later-context",
+      title: "Later",
+      context: "Keep this for the next prompt",
+    };
+    await act(async () =>
+      ref.current!.setComposerContextItem(later, { focus: false }),
+    );
+
+    await act(async () => {
+      chatMocks.readiness = {
+        canChat: true,
+        missing: false,
+        state: "configured",
+      };
+      root.render(<AgentKitAssistantChat {...props} ref={ref} />);
+    });
+    await flush();
+
+    expect(chatMocks.control.sendMessage).toHaveBeenCalledOnce();
+    expect(chatMocks.composerProps.contextItems).toEqual([later]);
+  });
+
+  it("drains another thread's deferred send while a prior thread is still dispatching", async () => {
+    const deferredState = (threadId: string) => {
+      const encodedThreadId = Array.from(threadId, (character) =>
+        character.codePointAt(0)!.toString(16),
+      ).join("-");
+      return {
+        key: `agentkit-deferred-provider-submissions:${encodedThreadId}`,
+        value: {
+          version: 1,
+          threadId,
+          submissions: [
+            {
+              id: `deferred-${threadId}`,
+              threadId,
+              text: `Send from ${threadId}`,
+              fileParts: [],
+              references: [],
+              composerOptions: {},
+              options: {},
+            },
+          ],
+        },
+      };
+    };
+    for (const threadId of ["thread-1", "thread-2"]) {
+      const state = deferredState(threadId);
+      chatMocks.appState.set(state.key, state.value);
+    }
+    const firstDispatch = Promise.withResolvers<void>();
+    chatMocks.control.sendMessage.mockImplementation(async (request: any) => {
+      if (request.text === "Send from thread-1") await firstDispatch.promise;
+    });
+
+    await mount(baseProps({ threadId: "thread-1" }));
+    await flush();
+    expect(chatMocks.control.sendMessage).toHaveBeenCalledOnce();
+
+    chatMocks.threadId = "thread-2";
+    await act(async () =>
+      root.render(
+        <AgentKitAssistantChat {...baseProps({ threadId: "thread-2" })} />,
+      ),
+    );
+    await flush();
+
+    expect(chatMocks.control.sendMessage).toHaveBeenCalledTimes(2);
+    expect(
+      chatMocks.control.sendMessage.mock.calls.map(([request]) => request.text),
+    ).toEqual(["Send from thread-1", "Send from thread-2"]);
+
+    await act(async () => {
+      firstDispatch.resolve();
+      await flush();
+    });
   });
 
   it("keeps the draft rejected if provider status becomes missing before submit", async () => {
@@ -1788,6 +1987,57 @@ describe("AgentKitAssistantChat host behavior", () => {
     expect(
       composer?.querySelector(".agentkit-after-composer-slot"),
     ).not.toBeNull();
+  });
+
+  it("accepts provider readiness resolving while composer context is prepared", async () => {
+    const release = vi.fn();
+    chatMocks.history = { beginSubmission: vi.fn(async () => release) };
+    chatMocks.readiness = {
+      canChat: false,
+      missing: false,
+      state: "unknown",
+    };
+    const items = [
+      { key: "app-reference", title: "Reference", context: "Source" },
+    ];
+    const prepared = Promise.withResolvers<typeof items>();
+    const context: AssistantChatComposerContext = {
+      menuItems: [],
+      contextItems: items,
+      onRemoveContextItem: vi.fn(),
+      prepareSubmission: vi.fn(() => prepared.promise),
+      submissionAccepted: vi.fn(),
+    };
+    const Provider = ({
+      children,
+    }: AssistantChatComposerContextProviderProps) => children(context);
+    const props = baseProps({
+      composerContextProvider: Provider,
+      providerStatusChecksEnabled: true,
+    });
+    await mount(props);
+
+    let submission!: Promise<void>;
+    await act(async () => {
+      submission = chatMocks.composerProps.onSubmit("Use the source", [], [], {
+        intent: "immediate",
+      });
+      await Promise.resolve();
+    });
+    chatMocks.readiness = {
+      canChat: true,
+      missing: false,
+      state: "configured",
+    };
+    await act(async () => root.render(<AgentKitAssistantChat {...props} />));
+    await act(async () => {
+      prepared.resolve(items);
+      await submission;
+    });
+
+    expect(chatMocks.control.sendMessage).toHaveBeenCalledOnce();
+    expect(context.submissionAccepted).toHaveBeenCalledExactlyOnceWith(items);
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it("keeps transient voice messages scoped to the active thread", async () => {
@@ -2203,6 +2453,12 @@ describe("AgentKitAssistantChat host behavior", () => {
   it.each(["immediate", "queued"])(
     "preserves pending selection when an %s send is rejected",
     async (intent) => {
+      if (intent === "queued") {
+        chatMocks.thread.activeRunIds = ["run-1"];
+        chatMocks.thread.runs = {
+          "run-1": { id: "run-1", status: "running", lastSequence: 1 },
+        };
+      }
       chatMocks.appState.set("pending-selection-context", {
         text: "Keep this selection",
         capturedAt: Date.now(),
